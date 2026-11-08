@@ -1,0 +1,49 @@
+import {projectArchiveText} from '../src/zip';
+import {openExamples,workshop,finishSwitch} from './project-helpers';
+import {test,expect} from '@playwright/test';
+import {readFile} from 'node:fs/promises';
+
+test('live search shows red overlaps and toggles to independently checked output',async({page},testInfo)=>{
+  await page.goto('/');
+  await expect(page.locator('.project-menu>summary')).toBeVisible();
+  await page.evaluate(()=>{
+    const seen={frames:new Set<string>(),overlap:false};
+    Object.assign(window,{liveSeen:seen});
+    new MutationObserver(()=>{
+      const frame=document.querySelector('[data-live-sequence]')?.getAttribute('data-live-sequence');
+      if(frame)seen.frames.add(frame);
+      if(document.querySelector('[data-overlap]'))seen.overlap=true;
+    }).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['data-live-sequence']});
+  });
+  await openExamples(page);await page.getByRole('button',{name:'Open and nest',exact:true}).click();await finishSwitch(page);
+  await expect(page.getByRole('img',{name:'Live nesting search'})).toBeVisible({timeout:20_000});
+  await expect(page.locator('.live-dot')).toBeVisible();
+  await expect(page.locator('.live-details .result-mode')).toBeVisible();
+  await page.waitForFunction(()=>{const seen=(window as unknown as {liveSeen:{frames:Set<string>;overlap:boolean}}).liveSeen;return seen.overlap&&seen.frames.size>=3;},{},{timeout:15_000});
+  const ghost=page.getByRole('button',{name:'Ghost mode',exact:true});
+  await expect(ghost).toHaveAttribute('aria-pressed','true');
+  await expect.poll(()=>page.locator('.workspace-svg').evaluate(node=>{
+    const svg=node as SVGSVGElement,box=svg.getBoundingClientRect();
+    return (new DOMPoint(0,0).matrixTransform(svg.getScreenCTM()!).x-box.left)/box.width;
+  })).toBeCloseTo(.1,2);
+  await expect(page.getByRole('button',{name:'Best valid solution',exact:true})).toHaveAttribute('aria-pressed','false');
+  await page.screenshot({path:testInfo.outputPath('live.png'),fullPage:true});
+  await page.getByRole('button',{name:'Best valid solution',exact:true}).click();
+  await expect(page.getByRole('img',{name:'Valid nesting result'})).toBeVisible();
+  await expect(page.locator('.live-dot')).toBeVisible();
+  await expect(ghost).toHaveAttribute('aria-pressed','false');
+  await expect(page.locator('[data-overlap]')).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'Best valid solution',exact:true})).toBeEnabled();
+  await page.getByRole('button',{name:'Live search',exact:true}).click();
+  await expect(page.getByRole('img',{name:'Live nesting search'})).toBeVisible();
+  await expect(ghost).toHaveAttribute('aria-pressed','true');
+  await expect(page.locator('.workspace-svg')).toBeVisible();
+  await page.getByRole('button',{name:'Stop',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Export project',exact:true})).toBeEnabled();
+  await expect(page.locator('.live-dot')).toHaveCount(0);
+  await expect(ghost).toHaveAttribute('aria-pressed','false');
+  const pending=page.waitForEvent('download');await page.getByRole('button',{name:'Export project',exact:true}).click();
+  const path=testInfo.outputPath('checked.zip');await(await pending).saveAs(path);
+  const saved=JSON.parse(projectArchiveText(await readFile(path)));
+  expect(saved.result.validation.status).toBe('passed');expect(saved.result.placements).toHaveLength(12);
+});

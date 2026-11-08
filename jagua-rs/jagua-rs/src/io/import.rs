@@ -1,0 +1,338 @@
+use crate::collision_detection::CDEConfig;
+use crate::entities::Item;
+use crate::entities::{Container, InferiorQualityZone, N_QUALITIES};
+use crate::geometry::geo_enums::RotationRange;
+use crate::geometry::primitives::{Point, Rect, SPolygon};
+use crate::geometry::shape_modification::{ShapeModifyConfig, ShapeModifyMode};
+use crate::geometry::short_edges::remove_short_edges;
+use crate::geometry::{AllowedOrientations, OriginalShape};
+use crate::geometry::{DTransformation, Transformation};
+use crate::io::ext_repr::{ExtContainer, ExtItem, ExtRotation, ExtSPolygon, ExtShape};
+use anyhow::{Result, bail, ensure};
+use itertools::Itertools;
+use log::{debug, warn};
+use std::fmt::Display;
+use std::sync::Arc;
+
+/// Converts external representations of items and containers into internal ones.
+/// Direct configuration changes must satisfy [`ShapeModifyConfig`]'s documented ranges.
+#[derive(Clone, Debug, Copy)]
+pub struct Importer {
+    pub shape_modify_config: ShapeModifyConfig,
+    pub cde_config: CDEConfig,
+}
+
+impl Importer {
+    /// Creates a new instance with the given configuration.
+    ///
+    /// * `cde_config` - Configuration for the CDE (Collision Detection Engine).
+    /// * `simplify_tolerance` - See [`ShapeModifyConfig`].
+    /// * `narrow_concavity_cutoff` - Optional definition for closing narrow concavities. If enabled, the shapes are modified to close "narrow" concavities. See [`ShapeModifyConfig`].
+    #[must_use]
+    pub fn new(
+        cde_config: CDEConfig,
+        simplify_tolerance: Option<f32>,
+        narrow_concavity_cutoff: Option<(f32, f32)>,
+    ) -> Importer {
+        Importer {
+            shape_modify_config: ShapeModifyConfig {
+                offset: None,
+                simplify_tolerance,
+                narrow_concavity_cutoff,
+            },
+            cde_config,
+        }
+    }
+
+    /// Set the minimum distance between items and other hazards.
+    /// Items are inflated and containers deflated by half this finite, nonnegative distance.
+    pub fn with_min_item_separation(mut self, separation: f32) -> Result<Self> {
+        ensure!(
+            separation.is_finite() && separation >= 0.0,
+            "min_item_separation must be finite and nonnegative"
+        );
+        self.shape_modify_config.offset = (separation > 0.0).then_some(separation / 2.0);
+        Ok(self)
+    }
+
+    /// Import geometry with a caller-assigned internal index, independent of the external ID.
+    pub fn import_item(&self, ext_item: &ExtItem, idx: usize) -> Result<Arc<Item>> {
+        debug!("[IMPORT] starting item {:?}", ext_item.id);
+
+        let original_shape = {
+            let shape = match &ext_item.shape {
+                ExtShape::Rectangle {
+                    x_min,
+                    y_min,
+                    width,
+                    height,
+                } => import_rectangle(*x_min, *y_min, *width, *height)?,
+                ExtShape::SimplePolygon(esp) => {
+                    import_described_polygon(esp, format_args!("item {}", ext_item.id))?
+                }
+                ExtShape::Polygon(ep) => {
+                    let outer =
+                        import_described_polygon(&ep.outer, format_args!("item {}", ext_item.id))?;
+                    let holes = ep
+                        .inner
+                        .iter()
+                        .enumerate()
+                        .map(|(i, ring)| {
+                            import_described_polygon(
+                                ring,
+                                format_args!("item {} hole {}", ext_item.id, i + 1),
+                            )
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    outer.with_holes(holes)?
+                }
+                ExtShape::MultiPolygon(_) => {
+                    bail!("No support for multipolygons yet")
+                }
+            };
+            OriginalShape {
+                pre_transform: centering_transformation(&shape),
+                shape,
+                modify_mode: ShapeModifyMode::Inflate,
+                modify_config: self.shape_modify_config,
+            }
+        };
+
+        let base_quality = ext_item.min_quality;
+
+        let rotations = import_rotation(&ext_item.orientation.rotation)?;
+        let axes = normalized_radians(&ext_item.orientation.reflection_axes, 180.0)?;
+        let allowed_orientations = AllowedOrientations::new(rotations, axes)?;
+
+        Item::new(
+            idx,
+            ext_item.id,
+            original_shape,
+            allowed_orientations,
+            base_quality,
+            self.cde_config.item_surrogate_config,
+        )
+        .map(Arc::new)
+    }
+
+    /// Imports container geometry and quality zones.
+    /// Returns an error for invalid geometry, unsupported shapes or out-of-range qualities.
+    pub fn import_container(&self, ext_cont: &ExtContainer) -> Result<Container> {
+        ensure!(
+            ext_cont.zones.iter().all(|zone| zone.quality < N_QUALITIES),
+            "Quality zones must have quality below {N_QUALITIES}"
+        );
+
+        let original_outer = {
+            let outer = match &ext_cont.shape {
+                ExtShape::Rectangle {
+                    x_min,
+                    y_min,
+                    width,
+                    height,
+                } => import_rectangle(*x_min, *y_min, *width, *height)?,
+                ExtShape::SimplePolygon(esp) => {
+                    import_described_polygon(esp, format_args!("container {}", ext_cont.id))?
+                }
+                ExtShape::Polygon(ep) => {
+                    import_described_polygon(&ep.outer, format_args!("container {}", ext_cont.id))?
+                }
+                ExtShape::MultiPolygon(_) => {
+                    bail!("No support for multipolygon shapes yet")
+                }
+            };
+            OriginalShape {
+                shape: outer,
+                pre_transform: DTransformation::empty(),
+                modify_mode: ShapeModifyMode::Deflate,
+                modify_config: self.shape_modify_config,
+            }
+        };
+
+        let holes = match &ext_cont.shape {
+            ExtShape::SimplePolygon(_) | ExtShape::Rectangle { .. } => vec![],
+            ExtShape::Polygon(jp) => {
+                let json_holes = &jp.inner;
+                json_holes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, hole)| {
+                        import_described_polygon(
+                            hole,
+                            format_args!("hole {i} of container {}", ext_cont.id),
+                        )
+                    })
+                    .collect::<Result<Vec<SPolygon>>>()?
+            }
+            ExtShape::MultiPolygon(_) => {
+                bail!("No support for multipolygon shapes yet")
+            }
+        };
+
+        let mut shapes_inferior_qzones = (0..N_QUALITIES)
+            .map(|q| {
+                ext_cont
+                    .zones
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, zone)| zone.quality == q)
+                    .map(|(i, zone)| match &zone.shape {
+                        ExtShape::Rectangle {
+                            x_min,
+                            y_min,
+                            width,
+                            height,
+                        } => import_rectangle(*x_min, *y_min, *width, *height),
+                        ExtShape::SimplePolygon(esp) => import_described_polygon(
+                            esp,
+                            format_args!("quality zone {i} of container {}", ext_cont.id),
+                        ),
+                        ExtShape::Polygon(_) => {
+                            bail!("Quality zones require rectangles or simple polygons")
+                        }
+                        ExtShape::MultiPolygon(_) => {
+                            bail!("Quality zones do not support multipolygons")
+                        }
+                    })
+                    .collect::<Result<Vec<SPolygon>>>()
+            })
+            .collect::<Result<Vec<Vec<SPolygon>>>>()?;
+
+        //merge the container holes with quality == 0
+        shapes_inferior_qzones[0].extend(holes);
+
+        //convert the shapes to inferior quality zones
+        let quality_zones = shapes_inferior_qzones
+            .into_iter()
+            .enumerate()
+            .map(|(q, zone_shapes)| {
+                let original_shapes = zone_shapes
+                    .into_iter()
+                    .map(|s| OriginalShape {
+                        shape: s,
+                        pre_transform: DTransformation::empty(),
+                        modify_mode: ShapeModifyMode::Inflate,
+                        modify_config: self.shape_modify_config,
+                    })
+                    .collect_vec();
+                InferiorQualityZone::new(q, original_shapes, self.cde_config.item_surrogate_config)
+            })
+            .collect::<Result<Vec<InferiorQualityZone>>>()?;
+
+        Container::new(original_outer, quality_zones, self.cde_config)
+    }
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn import_rotation(rotation: &ExtRotation) -> Result<RotationRange> {
+    const MAX_ANGLES: usize = 65_536;
+    let mut angles = match rotation {
+        ExtRotation::Continuous {} => return Ok(RotationRange::Continuous),
+        ExtRotation::Discrete { angles } => {
+            ensure!(
+                !angles.is_empty() && angles.len() <= MAX_ANGLES,
+                "discrete rotation requires 1..=65536 angles"
+            );
+            ensure!(
+                angles.iter().all(|angle| angle.is_finite()),
+                "rotation angles must be finite"
+            );
+            angles
+                .iter()
+                .map(|angle| angle.rem_euclid(360.0) % 360.0)
+                .collect::<Vec<_>>()
+        }
+        ExtRotation::Stepped { step } => {
+            ensure!(
+                step.is_finite() && *step > 0.0 && *step <= 360.0,
+                "rotation step must be finite and in (0, 360]"
+            );
+            let step = f64::from(*step);
+            let count = (360.0 / step).round();
+            ensure!(
+                count <= 65_536.0
+                    && (count * step - 360.0).abs() <= 360.0 * f64::from(f32::EPSILON),
+                "rotation step must divide 360 into at most 65536 angles"
+            );
+            (0..count as u32)
+                .map(|i| (f64::from(i) * 360.0 / count) as f32)
+                .collect()
+        }
+    };
+    angles.sort_by(f32::total_cmp);
+    angles.dedup();
+    if angles == [0.0] {
+        Ok(RotationRange::None)
+    } else {
+        Ok(RotationRange::Discrete(
+            angles.into_iter().map(f32::to_radians).collect(),
+        ))
+    }
+}
+
+// Normalize in the input unit before conversion so equivalent degree values stay identical.
+fn normalized_radians(angles: &[f32], period: f32) -> Result<Vec<f32>> {
+    ensure!(
+        angles.len() <= AllowedOrientations::MAX_ANGLES,
+        "orientation angle list exceeds the count limit"
+    );
+    ensure!(
+        angles.iter().all(|a| a.is_finite()),
+        "orientation angles must be finite"
+    );
+    Ok(angles
+        .iter()
+        .map(|a| (a.rem_euclid(period) % period).to_radians())
+        .collect())
+}
+
+/// Imports an axis-aligned rectangle as a [`SPolygon`].
+/// Fails for a non-positive width or height, or a rectangle too thin to be a valid [`SPolygon`].
+fn import_rectangle(x_min: f32, y_min: f32, width: f32, height: f32) -> Result<SPolygon> {
+    let rect = Rect::try_new(x_min, y_min, x_min + width, y_min + height)?;
+    SPolygon::try_from(rect)
+}
+
+pub fn import_simple_polygon(sp: &ExtSPolygon) -> Result<SPolygon> {
+    import_described_polygon(sp, "simple polygon")
+}
+
+/// [`import_simple_polygon`], with a description of the shape (e.g. "item 3") for its log messages.
+fn import_described_polygon(sp: &ExtSPolygon, shape: impl Display) -> Result<SPolygon> {
+    let mut points = sp.0.iter().map(|(x, y)| Point(*x, *y)).collect_vec();
+    //A closed ring repeats its first point at the end, an accepted way to write the format (no warning)
+    if points.len() > 1 && points[0] == points[points.len() - 1] {
+        points.pop();
+    }
+    //Remove vertices too close to their predecessor (SPolygon::new would remove them as well, but silently)
+    let removal = remove_short_edges(&mut points);
+    if !removal.removed.is_empty() {
+        warn!("[IMPORT] {shape}: {removal}");
+    }
+    SPolygon::new(points)
+}
+
+/// Returns a transformation that translates the shape's centroid to the origin.
+#[must_use]
+pub fn centering_transformation(shape: &SPolygon) -> DTransformation {
+    let Point(cx, cy) = shape.centroid();
+    DTransformation::new(0.0, (-cx, -cy))
+}
+
+/// Converts an external transformation (applicable to the original shapes) to an internal transformation (used within `jagua-rs`).
+///
+/// * `ext_transf` - The external transformation.
+/// * `pre_transf` - The transformation that was applied to the original shape to derive the internal representation.
+#[must_use]
+pub fn ext_to_int_transformation(
+    ext_transf: &DTransformation,
+    pre_transf: &DTransformation,
+) -> DTransformation {
+    //1. undo pre-transform
+    //2. do the absolute transformation
+
+    Transformation::empty()
+        .transform(&pre_transf.compose().inverse())
+        .transform_from_decomposed(ext_transf)
+        .decompose()
+}

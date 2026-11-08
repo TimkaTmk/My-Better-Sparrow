@@ -1,0 +1,2 @@
+# The benchmark catalog records checksums of the original LF-encoded JSON.
+/web/public/examples/*.json text eol=lf

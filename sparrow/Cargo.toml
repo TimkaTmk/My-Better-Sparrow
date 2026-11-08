@@ -1,0 +1,77 @@
+[workspace]
+members = [".", "cli"]
+default-members = [".", "cli"]
+
+[workspace.package]
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+repository = "https://github.com/JeroenGar/sparrow"
+
+[workspace.dependencies]
+jagua-rs = { path = "../jagua-rs/jagua-rs", features = ["spp"] }
+rand = "0.10"
+log = "0.4"
+anyhow = "1.0"
+ordered-float = "5.5"
+rayon = "1.12"
+numfmt = "1.2"
+
+[package]
+name = "sparrow"
+description = "State-of-the-art nesting heuristic for 2D irregular strip packing problems"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["nesting", "packing", "strip-packing", "optimization", "heuristic"]
+categories = ["algorithms", "science", "mathematics"]
+include = ["/src", "/README.md", "/LICENSE", "/CITATION.cff"]
+
+[dependencies]
+jagua-rs.workspace = true
+rand.workspace = true
+log.workspace = true
+anyhow.workspace = true
+ordered-float.workspace = true
+rayon.workspace = true
+numfmt.workspace = true
+rand_distr = "0.6"
+svg = "0.18"
+itertools = "0.15"
+serde = "1.0"
+serde_json = "1.0"
+tap = "1.0"
+slotmap = "1.1"
+float-cmp = "0.10"
+getrandom = { version = "0.4", features = ["wasm_js"] }
+
+[dev-dependencies]
+test-case = "3.3"
+
+[features]
+live_svg = []
+only_final_svg = []
+simd = []
+
+[profile.dev]
+overflow-checks = true
+
+[profile.debug-release]
+inherits = "release"
+debug-assertions = true
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
+[profile.test]
+opt-level = 3
+debug-assertions = true
+overflow-checks = true
+debug = true

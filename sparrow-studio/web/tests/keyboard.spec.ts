@@ -1,0 +1,35 @@
+import {test,expect} from '@playwright/test';
+
+test('keyboard import, validation errors, sizing, run, stop and export',async({page})=>{
+  await page.goto('/');
+  await expect(page.locator('nav').getByRole('button',{name:'Say hello 👋',exact:true})).toBeVisible();
+  const chooser=page.waitForEvent('filechooser');
+  await page.locator('.sidebar').getByRole('button',{name:'Import shapes',exact:true}).focus();
+  await page.keyboard.press('Enter');
+  await(await chooser).setFiles('public/examples/swim.json');
+  await page.getByRole('button',{name:'Preview import',exact:true}).press('Enter');
+  await page.getByRole('button',{name:'Open as new project',exact:true}).press('Enter');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.locator('.part-select').first().press('Space');
+  const width=page.getByRole('spinbutton',{name:'Width, mm',exact:true});
+  await width.fill('');await width.press('Tab');
+  await expect(page.getByRole('button',{name:'Nest parts',exact:true})).toBeDisabled();
+  await expect(page.getByText('Enter finite positions and positive dimensions up to 100,000 mm.')).toBeVisible();
+  await width.fill('50');await width.press('Enter');
+  await expect(width).toHaveValue('50');
+  await page.getByRole('button',{name:'Undo',exact:true}).press('Enter');
+  await page.getByLabel('Stop condition').selectOption('10');
+  await page.getByRole('button',{name:'Nest parts',exact:true}).press('Enter');
+  const checked=page.getByRole('button',{name:'Best valid solution',exact:true});
+  await expect(checked).toBeEnabled({timeout:20_000});await checked.press('Enter');
+  await expect(page.getByRole('button',{name:'Best valid solution',exact:true})).toBeEnabled();
+  await page.getByRole('button',{name:'Stop',exact:true}).press('Enter');
+  const download=page.waitForEvent('download');
+  await page.getByRole('button',{name:'Download SVG',exact:true}).press('Enter');
+  expect((await download).suggestedFilename()).toBe('sparrow_studio_swim.svg');
+  await page.locator('nav').getByRole('button',{name:'Say hello 👋',exact:true}).press('Enter');
+  await expect(page.getByRole('dialog')).toContainText('jeroen.gardeyn@gmail.com');
+  await expect(page.getByRole('link',{name:'LinkedIn ↗'})).toHaveAttribute('href','https://www.linkedin.com/in/jeroengardeyn/');
+  await page.keyboard.press('Escape');await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('nav').getByRole('button',{name:'Say hello 👋',exact:true})).toBeFocused();
+});
