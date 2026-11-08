@@ -1,6 +1,6 @@
 import { loadSerialWasm, loadThreadedWasm, supportsSIMD, type SolverBinary } from '../wasm';
 import { candidateResult, type RuntimeStart, type Start, type SolverMessage } from './protocol';
-import { fitSolverCandidate, validate } from '../geometry/validate';
+import { fitSolverCandidate, validateNormalized } from '../geometry/validate';
 import { normalizeDocument } from '../geometry/normalize';
 import { solverInput } from '../import/sparrow';
 
@@ -44,7 +44,9 @@ self.onmessage = async ({ data }: MessageEvent<RuntimeStart | {type:'preload';th
         }
         const candidate=candidateResult(doc,{...message,runId,documentRevision},data.seed);
         const result=fitSolverCandidate(doc,candidate);
-        message.validation=validate(doc,result,undefined,clearance);
+        const validationStarted=performance.now();
+        message.validation=validateNormalized(doc,result,undefined,clearance);
+        message.validationMs=performance.now()-validationStarted;
         if(message.validation.status==='passed') {
           if(result!==candidate) {
             message.solution.strip_width=result.usedLengthMm;

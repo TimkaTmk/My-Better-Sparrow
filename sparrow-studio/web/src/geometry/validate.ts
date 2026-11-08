@@ -1,6 +1,6 @@
 import polygonClipping from 'polygon-clipping';
 import { LIMITS, POLICY, type Document, type Part, type Placement, type Point, type Result, type Ring, type Validation } from '../model';
-import { area, bounds, intersects, normalizeDocument, normalizePart } from './normalize';
+import { area, bounds, intersects, normalizeDocument } from './normalize';
 
 export type WorldPart = { partId: string; copyIndex: number; outer: Ring; holes: Ring[] };
 export const materialRings = (part: WorldPart): Ring[] => [part.outer, ...part.holes];
@@ -47,19 +47,82 @@ export function pointSegmentDistance(p: Point, a: Point, b: Point): number {
   const t=d === 0 ? 0 : Math.max(0,Math.min(1,((p[0]-a[0])*dx+(p[1]-a[1])*dy)/d));
   return Math.hypot(p[0]-a[0]-t*dx,p[1]-a[1]-t*dy);
 }
-function distance(a: Ring,b: Ring): number {
-  let min=Infinity;
-  for(let i=0;i<a.length;i++) for(let j=0;j<b.length;j++) {
-    const p=a[i],q=a[(i+1)%a.length],r=b[j],s=b[(j+1)%b.length];
-    if(intersects(p,q,r,s)) return 0;
-    min=Math.min(min,pointSegmentDistance(p,r,s),pointSegmentDistance(q,r,s),pointSegmentDistance(r,p,q),pointSegmentDistance(s,p,q));
+type Bounds2D=[number,number,number,number];
+type Segment={a:Point;b:Point;bounds:Bounds2D;midX:number;midY:number};
+type SegmentNode={bounds:Bounds2D;count:number;segments?:Segment[];left?:SegmentNode;right?:SegmentNode};
+const SEGMENTS_PER_LEAF=8;
+function mergeBounds(a:Bounds2D,b:Bounds2D):Bounds2D {
+  return [Math.min(a[0],b[0]),Math.min(a[1],b[1]),Math.max(a[2],b[2]),Math.max(a[3],b[3])];
+}
+function boundsDistanceSquared(a:Bounds2D,b:Bounds2D):number {
+  const dx=Math.max(0,a[0]-b[2],b[0]-a[2]),dy=Math.max(0,a[1]-b[3],b[1]-a[3]);
+  return dx*dx+dy*dy;
+}
+function buildSegmentTree(segments:Segment[]):SegmentNode {
+  const box=segments.slice(1).reduce((current,segment)=>mergeBounds(current,segment.bounds),segments[0].bounds);
+  if(segments.length<=SEGMENTS_PER_LEAF)return {bounds:box,count:segments.length,segments};
+  const axis=box[2]-box[0]>=box[3]-box[1]?'midX':'midY';
+  segments.sort((a,b)=>a[axis]-b[axis]);
+  const middle=Math.floor(segments.length/2);
+  return {bounds:box,count:segments.length,left:buildSegmentTree(segments.slice(0,middle)),right:buildSegmentTree(segments.slice(middle))};
+}
+function segmentTree(rings:Ring[]):SegmentNode {
+  const segments:Segment[]=[];
+  for(const ring of rings)for(let i=0;i<ring.length;i++) {
+    const a=ring[i],b=ring[(i+1)%ring.length];
+    segments.push({a,b,bounds:[Math.min(a[0],b[0]),Math.min(a[1],b[1]),Math.max(a[0],b[0]),Math.max(a[1],b[1])],midX:(a[0]+b[0])/2,midY:(a[1]+b[1])/2});
   }
-  return min;
+  return buildSegmentTree(segments);
+}
+function pointSegmentDistanceSquared(p:Point,a:Point,b:Point):number {
+  const dx=b[0]-a[0],dy=b[1]-a[1],lengthSquared=dx*dx+dy*dy;
+  const t=lengthSquared===0?0:Math.max(0,Math.min(1,((p[0]-a[0])*dx+(p[1]-a[1])*dy)/lengthSquared));
+  const x=p[0]-a[0]-t*dx,y=p[1]-a[1]-t*dy;
+  return x*x+y*y;
+}
+function segmentDistanceSquared(a:Segment,b:Segment):number {
+  if(intersects(a.a,a.b,b.a,b.b))return 0;
+  return Math.min(pointSegmentDistanceSquared(a.a,b.a,b.b),pointSegmentDistanceSquared(a.b,b.a,b.b),pointSegmentDistanceSquared(b.a,a.a,a.b),pointSegmentDistanceSquared(b.b,a.a,a.b));
+}
+function distanceBetweenTrees(a:SegmentNode,b:SegmentNode,limit:number):number {
+  let bestSquared=limit*limit;
+  const stack:Array<[SegmentNode,SegmentNode]>=[[a,b]];
+  while(stack.length) {
+    const [left,right]=stack.pop()!;
+    if(boundsDistanceSquared(left.bounds,right.bounds)>=bestSquared)continue;
+    if(left.segments&&right.segments) {
+      for(const aSegment of left.segments)for(const bSegment of right.segments) {
+        if(boundsDistanceSquared(aSegment.bounds,bSegment.bounds)>=bestSquared)continue;
+        bestSquared=Math.min(bestSquared,segmentDistanceSquared(aSegment,bSegment));
+        if(bestSquared===0)return 0;
+      }
+      continue;
+    }
+    const splitLeft=!left.segments&&(!right.segments||left.count>=right.count);
+    const split=splitLeft?left:right,other=splitLeft?right:left;
+    const first=split.left!,second=split.right!;
+    const firstDistance=boundsDistanceSquared(first.bounds,other.bounds),secondDistance=boundsDistanceSquared(second.bounds,other.bounds);
+    if(firstDistance<secondDistance) {
+      if(secondDistance<bestSquared)stack.push(splitLeft?[second,other]:[other,second]);
+      if(firstDistance<bestSquared)stack.push(splitLeft?[first,other]:[other,first]);
+    } else {
+      if(firstDistance<bestSquared)stack.push(splitLeft?[first,other]:[other,first]);
+      if(secondDistance<bestSquared)stack.push(splitLeft?[second,other]:[other,second]);
+    }
+  }
+  return Math.sqrt(bestSquared);
 }
 export function validate(doc: Document, result: Result, serialized?: WorldPart[], edgeAllowanceMm = 0): Validation {
+  return validateGeometry(doc,result,serialized,edgeAllowanceMm,false);
+}
+/** Validate a document already normalized by the solver runtime. */
+export function validateNormalized(doc: Document, result: Result, serialized?: WorldPart[], edgeAllowanceMm = 0): Validation {
+  return validateGeometry(doc,result,serialized,edgeAllowanceMm,true);
+}
+function validateGeometry(doc: Document, result: Result, serialized: WorldPart[]|undefined, edgeAllowanceMm: number, alreadyNormalized: boolean): Validation {
   const v: Validation & {overlapAreaMm2:number;maxBoundaryViolationMm:number} = { status:'failed', overlapAreaMm2:0, maxBoundaryViolationMm:0, minClearanceMm:null, errors:[] };
   try {
-    doc=normalizeDocument(doc);
+    if(!alreadyNormalized)doc=normalizeDocument(doc);
     if(!Number.isFinite(result.usedLengthMm) || result.usedLengthMm<=0 || result.usedLengthMm>LIMITS.extent) throw Error('Used length must be finite, positive, and at most 100,000 mm.');
     if(!Array.isArray(result.placements) || result.placements.length!==doc.parts.reduce((n,p)=>n+p.quantity,0)) throw Error('Layout does not contain exactly the demanded copies.');
     const parts=new Map(doc.parts.map(p=>[p.id,p]));
@@ -83,7 +146,11 @@ export function validate(doc: Document, result: Result, serialized?: WorldPart[]
         const expectedRings=[expected[i].outer,...expected[i].holes];
         if([p.outer,...p.holes].some((ring,j)=>ring.length!==expectedRings[j].length||ring.some((point,k)=>point.length!==2||point.some((coordinate,axis)=>coordinate!==expectedRings[j][k][axis]))))throw Error('Serialized contours differ from the rigidly transformed input geometry.');
       }
-      normalizePart({...original,outer:p.outer,holes:p.holes});
+      // The source document was normalized above (or by the solver worker), and
+      // these contours are only rigid transforms of those valid rings. Rechecking
+      // self-intersections here would repeat an O(vertices²) source check for every copy.
+      const originalRings=[original.outer,...original.holes],transformedRings=[p.outer,...p.holes];
+      if(transformedRings.some((ring,j)=>ring.length!==originalRings[j].length||ring.some(point=>!point.every(Number.isFinite))))throw Error('Transformed contour has invalid coordinates.');
       const b=bounds(p.outer);
       v.maxBoundaryViolationMm=Math.max(v.maxBoundaryViolationMm,edgeAllowanceMm-b[0],edgeAllowanceMm-b[1],
         b[2]+edgeAllowanceMm-result.usedLengthMm,b[3]+edgeAllowanceMm-doc.settings.materialWidthMm);
@@ -91,8 +158,7 @@ export function validate(doc: Document, result: Result, serialized?: WorldPart[]
     });
     if(v.maxBoundaryViolationMm>POLICY.linearMm) v.errors.push(`Material boundary exceeded by ${v.maxBoundaryViolationMm} mm.`);
     const materials=world.map(materialRings);
-    const vertexCounts=materials.map(rings=>rings.reduce((sum,ring)=>sum+ring.length,0));
-    let operations=0;
+    const clearanceTrees=doc.settings.clearanceMm>0?materials.map(segmentTree):[];
     for(let i=0;i<world.length;i++) for(let j=0;j<i;j++) {
       const a=boxes[i],b=boxes[j];
       const boxDistance=Math.hypot(Math.max(0,a[0]-b[2],b[0]-a[2]),Math.max(0,a[1]-b[3],b[1]-a[3]));
@@ -104,10 +170,7 @@ export function validate(doc: Document, result: Result, serialized?: WorldPart[]
         if(overlap>POLICY.overlapMm2 && v.errors.length<20) v.errors.push(`Copies ${j+1} and ${i+1} overlap by ${overlap} mm².`);
       }
       if(doc.settings.clearanceMm>0 && (v.minClearanceMm===null || boxDistance<v.minClearanceMm)) {
-        operations+=vertexCounts[i]*vertexCounts[j];
-        if(operations>50_000_000) throw Error('Clearance check exceeded its segment budget. Use fewer vertices or parts.');
-        let gap=Infinity;
-        for(const ring of materials[i]) for(const other of materials[j]) gap=Math.min(gap,distance(ring,other));
+        const gap=distanceBetweenTrees(clearanceTrees[i],clearanceTrees[j],v.minClearanceMm??Infinity);
         if(!Number.isFinite(gap)) throw Error('Clearance check returned a non-finite distance.');
         v.minClearanceMm=Math.min(v.minClearanceMm ?? Infinity,gap);
       }

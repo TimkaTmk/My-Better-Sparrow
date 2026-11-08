@@ -25,6 +25,7 @@ export function phaseImprovements(history:Timing[],lengthMm:number) {
 }
 export function useSolver() {
   const [state,setState]=useState<RunState>('Ready'),[result,setResult]=useState<Result>(),[elapsed,setElapsed]=useState(0),[error,setError]=useState('');
+  const [validationWarning,setValidationWarning]=useState('');
   const [phase,setPhase]=useState<string>(),[skipping,setSkipping]=useState(false),[canSkip,setCanSkip]=useState(false);
   const [live,setLive]=useState<LiveFrame>(),[liveError,setLiveError]=useState('');
   const [workers,setWorkers]=useState<{pool:number;phaseWorkers?:number;requested?:number;reason?:string}>();
@@ -65,6 +66,7 @@ export function useSolver() {
     if(message) setError(message);
     if(r.startedAt) setElapsed((performance.now()-r.startedAt)/1000);
     setResult(r.best);setState(reason);
+    if(r.best||reason!=='Stopped')setValidationWarning('');
     if(!r.best&&reason==='Complete'){
       const failed=r.diagnostics.history.at(-1)?.errors?.[0];
       const explanation=failed?`No layout passed the geometry check. ${failed}`:'The solver finished without a feasible result. Check the part dimensions, material width and clearance.';
@@ -75,7 +77,7 @@ export function useSolver() {
   }
   function start(doc:Document,revision:number,threads?:number,requestedAt=performance.now()) {
     const startup:StartupTiming={preparedMs:performance.now()-requestedAt};
-    clear();setWorkers(undefined);setResult(undefined);setLive(undefined);setLiveError('');setError('');setElapsed(0);setState('Initializing');
+    clear();setWorkers(undefined);setResult(undefined);setLive(undefined);setLiveError('');setError('');setValidationWarning('');setElapsed(0);setState('Initializing');
     const id=++serial.current,seed=crypto.getRandomValues(new BigUint64Array(1))[0].toString();
     const solver=new Worker(new URL('./solver.worker.ts',import.meta.url),{type:'module'});
     const preview=new Worker(new URL('./geometry.worker.ts',import.meta.url),{type:'module'});
@@ -119,8 +121,13 @@ export function useSolver() {
         case 'candidate':
           startup.firstCandidateMs??=performance.now()-requestedAt;
           r.latest=data;r.diagnostics.liveSnapshots!++;
-          r.diagnostics.history.push({phase:r.diagnostics.phases?.at(-1)?.phase,sequence:data.sequence,elapsedMs:data.elapsedMs,lengthMm:data.solution.strip_width,validation:data.validation?.status??'passed',errors:data.validation?.errors});
-          if(data.validation?.status==='failed')break;
+          r.diagnostics.history.push({phase:r.diagnostics.phases?.at(-1)?.phase,sequence:data.sequence,elapsedMs:data.elapsedMs,lengthMm:data.solution.strip_width,validation:data.validation?.status??'passed',validationMs:data.validationMs,errors:data.validation?.errors});
+          if(data.validation&&data.validation.status!=='passed') {
+            const reason=data.validation.errors[0]??(data.validation.status==='pending'?'The exact geometry check has not completed.':'The candidate failed the exact geometry check.');
+            setValidationWarning(`${r.best?'A candidate was rejected':'No checked solution yet'}: ${reason}`);
+            break;
+          }
+          setValidationWarning('');
           if(!r.best||data.solution.strip_width<r.best.usedLengthMm){
             startup.firstValidMs??=performance.now()-requestedAt;
             r.best={...candidateResult(doc,data,seed),validation:data.validation??{status:'passed',source:'solver',overlapAreaMm2:null,maxBoundaryViolationMm:null,minClearanceMm:null,errors:[]}};
@@ -133,9 +140,9 @@ export function useSolver() {
     solver.onerror=e=>{if(run.current===r && r.solver) end('Error',e.message||'A background worker could not be loaded. Reload the page and try again.');};
     solver.postMessage({type:'start',runId:id,documentRevision:revision,document:doc,seed,threads});
   }
-  function invalidate() {clear();setWorkers(undefined);setResult(undefined);setLive(undefined);setLiveError('');setState('Ready');setError('');}
+  function invalidate() {clear();setWorkers(undefined);setResult(undefined);setLive(undefined);setLiveError('');setValidationWarning('');setState('Ready');setError('');}
   function load(checked:Result) {
-    clear();setWorkers(undefined);setLive(undefined);setLiveError('');setResult(checked);setElapsed(checked.elapsedSeconds);setState('Complete');setError('');
+    clear();setWorkers(undefined);setLive(undefined);setLiveError('');setValidationWarning('');setResult(checked);setElapsed(checked.elapsedSeconds);setState('Complete');setError('');
     diagnostics.current={solverRevision:checked.solverRevision,seed:checked.seed,buildMode:'Loaded project; result rechecked locally',stopReason:'Loaded project',history:[],liveErrors:[]};
   }
   function skipToCompression() {
@@ -144,5 +151,5 @@ export function useSolver() {
     setSkipping(true);r.diagnostics.compressionRequestedMs=r.startedAt?performance.now()-r.startedAt:0;
     r.solver.postMessage({type:'skip'});
   }
-  return {phase,canSkip,skipping,skipToCompression,state,workers,result,live,liveError,elapsed,error,start,stop:()=>end('Stopped'),invalidate,load,diagnostics};
+  return {phase,canSkip,skipping,skipToCompression,state,workers,result,live,liveError,validationWarning,elapsed,error,start,stop:()=>end('Stopped'),invalidate,load,diagnostics};
 }
