@@ -38,11 +38,11 @@ Live snapshots are serialized at most every 100 ms; feasible results and the fin
 
 ## Deployment
 
-`.github/workflows/pages.yml` builds and publishes GitHub Pages on pushes to `main`, or through its manual Run workflow action. It installs Node 24, stable Rust, nightly 2026-08-30 and wasm-pack 0.15.0, uses the dependency lockfiles, and builds all four solver variants. Unit tests and the Chromium production browser suite must pass before the Pages artifact is published. A failed build leaves the previous deployment in place.
+`.github/workflows/pages.yml` builds and publishes GitHub Pages on pushes to `master`, or through its manual Run workflow action. It installs Node 24, stable Rust, nightly 2026-08-30 and wasm-pack 0.15.0, uses the dependency lockfiles, and builds all four solver variants. Unit tests and the Chromium production browser suite must pass before the Pages artifact is published. A failed build leaves the previous deployment in place. In repository settings, select **Pages → Build and deployment → GitHub Actions**.
 
-The initial Pages address is https://jeroengar.github.io/sparrow-studio/. The custom domain is `sparrowstudio.app`, registered at Spaceship. GitHub Pages remains the host when a custom domain is connected. The repository and website are public.
+This repository's Pages address is https://timkatmk.github.io/My-Better-Sparrow/. GitHub Pages serves the static web build; solver work and imported files run in the visitor's browser.
 
-Domain setup uses GitHub's repository Pages setting, four apex A records pointing to `185.199.108.153`, `185.199.109.153`, `185.199.110.153` and `185.199.111.153`, and a `www` CNAME pointing to `jeroengar.github.io`. Keep the `_github-pages-challenge-JeroenGar` TXT record used for account-level domain verification. HTTPS is provided by GitHub Pages. The custom domain is configured in GitHub settings; Actions publishing does not use a CNAME file in the build.
+An optional custom domain can be connected in the repository's Pages settings; HTTPS is provided by GitHub Pages.
 
 After deployment, check a fresh browser session for startup isolation, a checked nesting result, Stop/restart, dataset loading and downloads. Browser-stored shapes are tied to the origin: localhost, github.io and the custom domain have separate libraries.
 
