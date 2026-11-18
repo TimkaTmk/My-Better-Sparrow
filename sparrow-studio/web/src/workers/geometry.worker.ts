@@ -40,6 +40,13 @@ self.onmessage=async({data}: MessageEvent<GeometryRequest>)=>{
       }
       case 'import': {
         if(!data.files.length || data.files.some(f=>new Blob([f.text]).size>10*1024*1024) || data.files.reduce((n,f)=>n+new Blob([f.text]).size,0)>25*1024*1024) throw Error('Import limit: 10 MiB per file, 25 MiB per batch.');
+        if(data.intent==='material') {
+          if(data.files.length!==1)throw Error('Import one DXF file for the material edge.');
+          const file=data.files[0],text=file.text.trimStart();
+          if(!/^0[ \t]*(?:\r\n|\n|\r)[ \t]*SECTION\b/.test(text)&&!text.startsWith('AutoCAD Binary DXF'))throw Error('Import the material edge from an ASCII DXF file.');
+          reply={...ids,type:'import-review',review:importDXF(file.text,file.name,{scale:data.scale,overrideDxfUnits:data.overrideDxfUnits,tolerance:data.tolerance??.01,enclosed:data.enclosed??'holes',layers:data.layers,mode:'material'})};
+          break;
+        }
         if(data.files.some(f=>f.text.trimStart().startsWith('<')))await initializeSVG();
         const reviews=data.files.map(f=>{
           const text=f.text.trimStart();

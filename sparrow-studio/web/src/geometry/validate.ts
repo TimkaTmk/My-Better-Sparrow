@@ -1,6 +1,6 @@
 import polygonClipping from 'polygon-clipping';
 import { LIMITS, POLICY, type Document, type Part, type Placement, type Point, type Result, type Ring, type Validation } from '../model';
-import { area, bounds, intersects, normalizeDocument } from './normalize';
+import { area, bounds, intersects, materialOutline, normalizeDocument } from './normalize';
 
 export type WorldPart = { partId: string; copyIndex: number; outer: Ring; holes: Ring[] };
 export const materialRings = (part: WorldPart): Ring[] => [part.outer, ...part.holes];
@@ -21,6 +21,9 @@ export function worldParts(doc: Document, result: Pick<Result,'placements'>): Wo
 // small edge discrepancy by moving the entire layout before checking the original
 // contours. Relative placements and the requested clearance stay the same.
 export function fitSolverCandidate(doc: Document, result: Result): Result {
+  // A custom front profile is fixed in world coordinates; never translate the
+  // solver's candidate to fit the legacy rectangular box.
+  if(doc.settings.materialLeftEdge)return result;
   const allowance=doc.settings.clearanceMm;
   let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
   for(const part of worldParts(doc,result)) {
@@ -138,7 +141,9 @@ function validateGeometry(doc: Document, result: Result, serialized: WorldPart[]
       if(part.rotations.kind==='discrete' && !part.rotations.degrees.some(a=>Math.abs(((p.angleDeg-a)%360+540)%360-180)<=POLICY.angleDeg)) throw Error(`Disallowed rotation for ${part.name}.`);
     }
     const expected=worldParts(doc,result),world=serialized ?? expected;
+    const materials=world.map(materialRings);
     if(world.length!==result.placements.length) throw Error('Serialized contour count differs from the layout.');
+    const sheet=doc.settings.materialLeftEdge?materialOutline(doc.settings.materialLeftEdge,doc.settings.materialWidthMm,result.usedLengthMm):undefined;
     const boxes=world.map((p,i)=>{
       const original=parts.get(p.partId);
       if(!original || p.partId!==result.placements[i].partId || p.copyIndex!==result.placements[i].copyIndex || p.holes.length!==original.holes.length) throw Error('Serialized part or hole identity differs from the layout.');
@@ -152,12 +157,32 @@ function validateGeometry(doc: Document, result: Result, serialized: WorldPart[]
       const originalRings=[original.outer,...original.holes],transformedRings=[p.outer,...p.holes];
       if(transformedRings.some((ring,j)=>ring.length!==originalRings[j].length||ring.some(point=>!point.every(Number.isFinite))))throw Error('Transformed contour has invalid coordinates.');
       const b=bounds(p.outer);
-      v.maxBoundaryViolationMm=Math.max(v.maxBoundaryViolationMm,edgeAllowanceMm-b[0],edgeAllowanceMm-b[1],
+      if(sheet) v.maxBoundaryViolationMm=Math.max(v.maxBoundaryViolationMm,-b[0],-b[1],b[2]-result.usedLengthMm,b[3]-doc.settings.materialWidthMm);
+      else v.maxBoundaryViolationMm=Math.max(v.maxBoundaryViolationMm,edgeAllowanceMm-b[0],edgeAllowanceMm-b[1],
         b[2]+edgeAllowanceMm-result.usedLengthMm,b[3]+edgeAllowanceMm-doc.settings.materialWidthMm);
       return b;
     });
     if(v.maxBoundaryViolationMm>POLICY.linearMm) v.errors.push(`Material boundary exceeded by ${v.maxBoundaryViolationMm} mm.`);
-    const materials=world.map(materialRings);
+    if(sheet) {
+      const sheetTree=segmentTree([sheet]);
+      const materialClearance=Math.max(edgeAllowanceMm,doc.settings.clearanceMm);
+      for(let i=0;i<world.length;i++) {
+        const outside=polygonClipping.difference(materials[i],[sheet]);
+        const outsideArea=outside.reduce((total,polygon)=>total+Math.abs(area(polygon[0]))-polygon.slice(1).reduce((sum,hole)=>sum+Math.abs(area(hole)),0),0);
+        if(!Number.isFinite(outsideArea))throw Error('Material containment check returned a non-finite area.');
+        if(outsideArea>POLICY.overlapMm2) {
+          v.maxBoundaryViolationMm=Math.max(v.maxBoundaryViolationMm,Math.sqrt(outsideArea));
+          if(v.errors.length<20)v.errors.push(`Copy ${i+1} extends outside the custom material profile.`);
+        }
+        if(materialClearance>0) {
+          const gap=distanceBetweenTrees(segmentTree([world[i].outer]),sheetTree,materialClearance);
+          if(gap+POLICY.linearMm<materialClearance) {
+            v.maxBoundaryViolationMm=Math.max(v.maxBoundaryViolationMm,materialClearance-gap);
+            if(v.errors.length<20)v.errors.push(`Copy ${i+1} is closer than ${materialClearance} mm to the material boundary.`);
+          }
+        }
+      }
+    }
     const clearanceTrees=doc.settings.clearanceMm>0?materials.map(segmentTree):[];
     for(let i=0;i<world.length;i++) for(let j=0;j<i;j++) {
       const a=boxes[i],b=boxes[j];

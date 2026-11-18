@@ -50,6 +50,38 @@ export function normalizeRing(value: unknown): Ring {
   }
   return area(ring) < 0 ? ring.reverse() : ring;
 }
+/** Canonical open profile: bottom endpoint first at y=0 and top endpoint last at y=height. */
+export function normalizeMaterialLeftEdge(value: unknown, height: number): Ring {
+  if(!Array.isArray(value)||value.length<2||value.length>LIMITS.verticesPerPart)throw Error('Material profile must contain 2–5,000 points.');
+  if(!Number.isFinite(height)||height<=0||height>LIMITS.extent)throw Error('Material height must be positive and at most 100,000 mm.');
+  let profile:Ring=[];
+  for(const point of value) {
+    if(!Array.isArray(point)||point.length!==2||!point.every(v=>typeof v==='number'&&Number.isFinite(v)&&Math.abs(v)<=LIMITS.extent))throw Error('Material profile coordinates must be finite and within 100,000 mm.');
+    const p=point as Point;
+    if(!profile.length||!same(profile.at(-1)!,p))profile.push(p);
+  }
+  if(profile.length<2)throw Error('Material profile needs two distinct endpoints.');
+  if(profile[0][1]===profile.at(-1)![1])throw Error('Material profile endpoints must have different heights.');
+  if(profile[0][1]>profile.at(-1)![1])profile.reverse();
+  const bottom=profile[0],top=profile.at(-1)!,low=bottom[1],high=top[1];
+  if(high-low<=1e-6)throw Error('Material profile height is too small.');
+  if(profile.some(([,_y])=>_y<low-1e-6||_y>high+1e-6))throw Error('Material profile must stay between its bottom and top endpoints.');
+  const minX=Math.min(...profile.map(p=>p[0]));
+  const scale=height/(high-low);
+  profile=profile.map(([x,y])=>[x-minX,Math.max(0,Math.min(height,(y-low)*scale))]);
+  profile[0]=[profile[0][0],0];profile[profile.length-1]=[profile.at(-1)![0],height];
+  if(new Set(profile.map(p=>`${p[0]},${p[1]}`)).size!==profile.length)throw Error('Material profile repeats a point.');
+  const maxX=Math.max(...profile.map(p=>p[0])),minimumLength=maxX+Math.max(height,maxX,1)*2e-5,previewLength=maxX+Math.max(height,1);
+  if(minimumLength>LIMITS.extent||previewLength>LIMITS.extent)throw Error('Material profile leaves no room for the right edge within the 100,000 mm limit.');
+  // Validate the open profile as part of a sufficiently wide closed sheet.
+  normalizeRing(materialOutline(profile,height,previewLength));
+  return profile;
+}
+export function materialOutline(profile:Ring,height:number,length:number):Ring {
+  if(!Number.isFinite(length)||length<=0||!Number.isFinite(height)||height<=0)throw Error('Material outline dimensions must be positive.');
+  if(length<=Math.max(...profile.map(p=>p[0])))throw Error('The right edge must lie to the right of the entire material profile.');
+  return [...profile,[length,height],[length,0]];
+}
 export function normalizePart(part: Part): Part {
   if (typeof part.id !== 'string' || !part.id || typeof part.name !== 'string' || !part.source || !['svg','dxf','sparrow','drawn'].includes(part.source.format)) throw Error('Invalid part identity or provenance.');
   if (!Number.isInteger(part.quantity) || part.quantity < 0 || part.quantity > LIMITS.copies) throw Error('Quantity must be a whole number from 0 to 500.');
@@ -95,5 +127,6 @@ export function normalizeDocument(doc: Document, allowEmpty=false): Document {
       seen.add(key);
     }
   }
-  return { ...doc, parts };
+  const settings={...s,...(s.materialLeftEdge===undefined?{}:{materialLeftEdge:normalizeMaterialLeftEdge(s.materialLeftEdge,s.materialWidthMm)})};
+  return { ...doc, settings, parts };
 }

@@ -59,3 +59,27 @@ test('nested DXF block arrays import transformed parts and holes',async({page})=
   await expect(page.getByRole('button',{name:'Best valid solution',exact:true})).toBeEnabled();
   const stop=page.getByRole('button',{name:'Stop',exact:true});if(await stop.isVisible())await stop.click();
 });
+
+test('imports and nests against a custom left material profile',async({page},testInfo)=>{
+  await page.goto('/');await newProject(page);
+  const source=`0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n8\nEDGE\n90\n3\n70\n0\n10\n5\n20\n0\n10\n0\n20\n5\n10\n7\n20\n10\n0\nENDSEC\n0\nEOF\n`;
+  await page.getByRole('button',{name:'Import material left edge from DXF'}).click();
+  await page.locator('input[accept=".dxf"]').setInputFiles({name:'profile.dxf',mimeType:'application/dxf',buffer:Buffer.from(source)});
+  const dialog=page.getByRole('dialog');await page.getByRole('button',{name:'Preview import',exact:true}).click();
+  await expect(dialog).toContainText('One open polyline detected');
+  await expect(dialog).toContainText('two horizontal extensions can have different lengths');
+  await dialog.getByRole('button',{name:'Use this material edge'}).click();
+  await expect(page.getByText('Custom left profile · the solver keeps this edge fixed and shrinks the right edge.')).toBeVisible();
+  await page.getByRole('button',{name:'Draw shape'}).click();
+  const shape=page.getByRole('dialog');await shape.getByLabel('Width, mm').fill('2');await shape.getByLabel('Height, mm').fill('2');
+  await shape.getByRole('button',{name:'Add shape'}).click();
+  await page.getByLabel('Stop condition').selectOption('10');
+  await page.getByRole('button',{name:'Nest parts',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Best valid solution',exact:true})).toBeEnabled({timeout:30_000});
+  await expect(page.locator('.drawing-panel path[data-material-outline="custom"]')).toBeVisible();
+  const stop=page.getByRole('button',{name:'Stop',exact:true});if(await stop.isVisible())await stop.click();
+  await page.getByLabel('Export format').selectOption('dxf');
+  const download=page.waitForEvent('download');await page.getByRole('button',{name:'Download DXF'}).click();
+  const file=await download,path=testInfo.outputPath('profile.dxf');await file.saveAs(path);
+  const exported=await readFile(path,'utf8');expect(exported).toContain('SPARROW_SHEET');expect(exported).toContain('LWPOLYLINE');
+});

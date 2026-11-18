@@ -43,7 +43,7 @@ export type GeometryRequest = Identity & (
   | { type:'resize'; document:Document; partId:string; axis:0|1; sizeMm:number }
   | { type:'edit-selection'; document:Document; ids:string[]; edit:GeometryEdit; refs?:CopyRef[] }
   | { type:'library'; text:string; fileName:string }
-  | { type:'import'; files:{name:string;text:string}[]; scale:number; overrideDxfUnits?:boolean; tolerance?:number; enclosed?:'holes'|'parts'; layers?:string[] }
+  | { type:'import'; files:{name:string;text:string}[]; scale:number; overrideDxfUnits?:boolean; tolerance?:number; enclosed?:'holes'|'parts'; layers?:string[];intent?:'shapes'|'material' }
   | { type:'export'; document:Document; result?:Result }
   | { type:'archive'; document:Document; result?:Result }
   | { type:'live-preview'; sequence:number; document:Document; result:Result }

@@ -5,7 +5,21 @@ import {area,bounds} from '../src/geometry/normalize';
 const options={scale:1,tolerance:.01,enclosed:'holes' as const};
 export const dxf=(entities:string,units=4)=>`0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n${units}\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n${entities}0\nENDSEC\n0\nEOF\n`;
 const poly=(points:number[][],layer='cut')=>`0\nLWPOLYLINE\n8\n${layer}\n90\n${points.length}\n70\n1\n${points.map(([x,y,b=0])=>`10\n${x}\n20\n${y}\n42\n${b}\n`).join('')}`;
+const openPoly=(points:number[][],layer='edge')=>`0\nLWPOLYLINE\n8\n${layer}\n90\n${points.length}\n70\n0\n${points.map(([x,y,b=0])=>`10\n${x}\n20\n${y}\n42\n${b}\n`).join('')}`;
 const line=(x:number,y:number,u:number,v:number)=>`0\nLINE\n10\n${x}\n20\n${y}\n11\n${u}\n21\n${v}\n`;
+it('imports one open polyline as a fixed left edge and extends unequal horizontal ends',()=>{
+  const points=[[8,2],[3,6],[10,12]],review=importDXF(dxf(openPoly(points)),'edge.dxf',{...options,mode:'material'});
+  expect(review.document.parts).toEqual([]);expect(review.document.settings.materialWidthMm).toBe(10);
+  expect(review.material).toEqual({leftEdge:[[5,0],[0,4],[7,10]],heightMm:10,previewLengthMm:17});
+  expect(review.layers).toEqual(['edge']);
+  const reversed=importDXF(dxf(openPoly([...points].reverse())),'edge-reversed.dxf',{...options,mode:'material'});
+  expect(reversed.material?.leftEdge).toEqual(review.material?.leftEdge);
+});
+it('rejects ambiguous or vertically degenerate material polylines',()=>{
+  expect(()=>importDXF(dxf(openPoly([[0,0],[4,4],[2,8]])+openPoly([[10,0],[12,8]],'other')),'multiple.dxf',{...options,mode:'material'})).toThrow('exactly one open 2D polyline');
+  expect(()=>importDXF(dxf(openPoly([[0,2],[4,5],[8,2]])),'flat.dxf',{...options,mode:'material'})).toThrow('different heights');
+  expect(()=>importDXF(dxf(poly([[0,0],[10,0],[10,10],[0,10]])),'closed.dxf',{...options,mode:'material'})).toThrow('exactly one open 2D polyline');
+});
 it('flattens a bulged semicircle and assembles a LINE/ARC loop',()=>{
   const bulged=importDXF(dxf(poly([[0,0,1],[20,0]])),'bulge.dxf',options);
   expect(bulged.issues).toEqual([]);

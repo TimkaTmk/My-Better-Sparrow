@@ -1,7 +1,7 @@
 import {useDismissibleMenu} from './useDismissibleMenu';
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { Document, Point, Result } from '../model';
-import { bounds } from '../geometry/normalize';
+import { bounds,materialOutline } from '../geometry/normalize';
 import { pathData } from '../geometry/path';
 import type { LiveGeometry } from '../geometry/live';
 import { placementBounds, selectionBounds, type GeometryEdit } from '../geometry/manipulate';
@@ -240,7 +240,7 @@ export default function Workspace({ document: doc, result, live, selected, selec
       }}
       onPointerCancel={event => { touches.current.delete(event.pointerId); if (!touches.current.size) pinch.current = undefined; touchDraw.current = undefined; setDrag(undefined); setMarquee(undefined); }}
       onLostPointerCapture={event => { touches.current.delete(event.pointerId); if (!touches.current.size) pinch.current = undefined; touchDraw.current = undefined; setDrag(undefined); setMarquee(undefined); }}>
-      {world && <><rect x="0" y={-doc.settings.materialWidthMm} width={result!.usedLengthMm} height={doc.settings.materialWidthMm} fill={outlines ? 'none' : 'var(--material-fill)'} stroke="var(--secondary)" vectorEffect="non-scaling-stroke" />
+       {world && <>{doc.settings.materialLeftEdge?<path data-material-outline="custom" d={pathData([materialOutline(doc.settings.materialLeftEdge,doc.settings.materialWidthMm,result!.usedLengthMm)])} transform="scale(1 -1)" fill={outlines?'none':'var(--material-fill)'} stroke="var(--secondary)" vectorEffect="non-scaling-stroke"/>:<rect x="0" y={-doc.settings.materialWidthMm} width={result!.usedLengthMm} height={doc.settings.materialWidthMm} fill={outlines ? 'none' : 'var(--material-fill)'} stroke="var(--secondary)" vectorEffect="non-scaling-stroke" />}
         <text x="0" y={-doc.settings.materialWidthMm - 2} fontSize={camera.w / 70} fill="var(--muted)">{(result!.usedLengthMm / unitScale(displayUnit)).toFixed(2)} {displayUnit} × {displayLength(doc.settings.materialWidthMm, displayUnit)} {displayUnit}</text></>}
       {showWidth && <g className="material-width-band" data-material-width-band={doc.settings.materialWidthMm} pointerEvents="none" aria-hidden="true"><rect x={coordinates.left} y={-doc.settings.materialWidthMm} width={size.width * unit} height={doc.settings.materialWidthMm} /><path d={`M${coordinates.left},0h${size.width * unit}M${coordinates.left},${-doc.settings.materialWidthMm}h${size.width * unit}`} vectorEffect="non-scaling-stroke" /></g>}
       <g className="coordinate-grid" aria-hidden="true" pointerEvents="none" data-grid-step={coordinates.major}>{(['minor', 'major', 'origin'] as const).map(kind => <path key={kind} className={kind} fill="none" vectorEffect="non-scaling-stroke" d={[...coordinates.x.filter(t => (t.value === 0 ? 'origin' : t.major ? 'major' : 'minor') === kind).map(t => `M${t.mm},${coordinates.top}v${size.height * unit}`), ...coordinates.y.filter(t => (t.value === 0 ? 'origin' : t.major ? 'major' : 'minor') === kind).map(t => `M${coordinates.left},${-t.mm}h${size.width * unit}`)].join(' ')} />)}</g>

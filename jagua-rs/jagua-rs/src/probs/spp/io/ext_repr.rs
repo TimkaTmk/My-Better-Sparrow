@@ -15,6 +15,10 @@ pub struct ExtSPInstance {
     pub items: Vec<ExtItem>,
     /// Fixed height of the strip
     pub strip_height: f32,
+    /// Optional fixed left boundary, from the bottom endpoint to the top endpoint.
+    /// Omitted instances retain the legacy rectangular strip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strip_left_boundary: Option<Vec<[f32; 2]>>,
 }
 
 /// Item with a demand

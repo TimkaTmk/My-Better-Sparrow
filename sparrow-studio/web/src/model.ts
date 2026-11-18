@@ -7,7 +7,7 @@ export type Part = {
   outer: Ring; holes: Ring[]; approximationToleranceMm: number; quantity: number;
   rotations: RotationRule; preparationPosition: Point;
 };
-export type Settings = { solverPreset?: 'standard' | 'fast'; materialWidthMm: number; clearanceMm: number; timeLimitSeconds: 10 | 30 | 60 | 120 | 300 | 600 | null };
+export type Settings = { solverPreset?: 'standard' | 'fast'; materialWidthMm: number; materialLeftEdge?: Ring; clearanceMm: number; timeLimitSeconds: 10 | 30 | 60 | 120 | 300 | 600 | null };
 export type Placement = { partId: string; copyIndex: number; xMm: number; yMm: number; angleDeg: number };
 /** A document keeps the editable position of every demanded copy. */
 export type Document = { name: string; parts: Part[]; settings: Settings; placements?: Placement[] };

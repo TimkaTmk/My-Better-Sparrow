@@ -20,8 +20,8 @@ impl SPProblem {
     /// Creates a problem, returning an error if its strip cannot form a container.
     pub fn new(instance: SPInstance) -> Result<Self> {
         let item_demand_qtys = instance.items.iter().map(|(_, qty)| *qty).collect_vec();
-        let strip = instance.base_strip;
-        let layout = Layout::new(strip.try_into()?);
+        let strip = instance.base_strip.clone();
+        let layout = Layout::new(strip.clone().try_into()?);
 
         Ok(Self {
             instance,
@@ -35,9 +35,13 @@ impl SPProblem {
     /// Returns an error without changing the problem if the new container is invalid.
     pub fn change_strip_width(&mut self, new_width: f32) -> Result<()> {
         ensure!(new_width > 0.0, "strip width must be positive");
-        let mut strip = self.strip;
+        ensure!(
+            new_width >= self.strip.minimum_width(),
+            "strip width is below the minimum for its left boundary"
+        );
+        let mut strip = self.strip.clone();
         strip.set_width(new_width);
-        let container = strip.try_into()?;
+        let container = strip.clone().try_into()?;
         self.layout.swap_container(container);
         self.strip = strip;
         Ok(())
@@ -61,7 +65,7 @@ impl SPProblem {
 
         // Keep the actual right inset of the collision boundary when trimming the strip.
         let right_inset = self.strip.width - self.layout.container().outer_cd().bbox().x_max;
-        let fitted_width = item_x_max + right_inset;
+        let fitted_width = (item_x_max + right_inset).max(self.strip.minimum_width());
 
         self.change_strip_width(fitted_width)?;
         debug_assert_eq!(collision_free_before, self.layout.is_collision_free());
@@ -93,7 +97,7 @@ impl SPProblem {
     pub fn save(&self) -> SPSolution {
         let solution = SPSolution {
             layout_snapshot: self.layout.save(),
-            strip: self.strip,
+            strip: self.strip.clone(),
             time_stamp: Instant::now(),
         };
 
@@ -108,7 +112,7 @@ impl SPProblem {
         if self.layout.restore(&solution.layout_snapshot).is_err() {
             self.layout = Layout::from_snapshot(&solution.layout_snapshot);
         }
-        self.strip = solution.strip;
+        self.strip = solution.strip.clone();
 
         //Restore the item demands
         {

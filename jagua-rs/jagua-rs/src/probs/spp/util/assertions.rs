@@ -11,7 +11,7 @@ pub fn problem_matches_solution(spp: &SPProblem, sol: &SPSolution) -> bool {
         time_stamp: _,
     } = sol;
 
-    assert_eq!(*strip, spp.strip);
+    assert_eq!(strip, &spp.strip);
     assert!((spp.density() - sol.density()).abs() <= f32::EPSILON);
     assert!(snapshot_matches_layout(&spp.layout, layout_snapshot));
 

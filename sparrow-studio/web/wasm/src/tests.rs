@@ -58,6 +58,23 @@ fn clearance_is_a_full_gap_and_a_full_edge_allowance() {
 }
 
 #[test]
+fn initial_placement_uses_the_custom_left_boundary() {
+    let input = parse_instance(&json!({
+        "name":"profile strip", "strip_height":10.0,
+        "strip_left_boundary":[[0.0,0.0],[2.0,5.0],[0.0,10.0]],
+        "items":[{"id":0,"demand":1,"allowed_orientations":[0.0],
+            "shape":{"type":"rectangle","data":{"x_min":0.0,"y_min":0.0,"width":2.0,"height":2.0}}}]
+    }).to_string(), 0.0).unwrap();
+    let importer = Importer::new(DEFAULT_SPARROW_CONFIG.cde_config, None, None);
+    let instance = import_instance(&importer, &input).unwrap();
+    let builder = LBFBuilder::new(instance, Xoshiro256PlusPlus::seed_from_u64(42), LBF_SAMPLE_CONFIG)
+        .unwrap().construct().unwrap();
+    assert!(builder.prob.layout().is_collision_free());
+    assert_eq!(builder.prob.strip().left_boundary.as_ref().unwrap().len(), 3);
+    assert!(builder.prob.strip_width() > 2.0);
+}
+
+#[test]
 fn fast_preset_matches_imported_search_config_and_respects_worker_limit() {
     let fast = solver_config("fast", 3, None, false).unwrap();
     assert_eq!(fast.expl_cfg.shrink_step, 0.01);

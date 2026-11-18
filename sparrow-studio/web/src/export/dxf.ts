@@ -2,12 +2,13 @@ import parseString from 'dxf/lib/parseString';
 import {DxfWriter,LWPolylineFlags,Units,point2d,point3d} from '@tarikjabiri/dxf';
 import type {WorldPart} from '../geometry/validate';
 import {SHEET_LAYER,type Document,type Ring} from '../model';
+import {materialOutline} from '../geometry/normalize';
 
 export const STUDIO_CREDIT='nested with sparrow/studio · https://sparrowstudio.app';
 
 export function exportDXF(doc:Document,world:WorldPart[],sheetLengthMm:number):string {
   const sheetWidth=doc.settings.materialWidthMm;
-  const sheet:Ring=[[0,0],[sheetLengthMm,0],[sheetLengthMm,sheetWidth],[0,sheetWidth]];
+  const sheet:Ring=doc.settings.materialLeftEdge?materialOutline(doc.settings.materialLeftEdge,sheetWidth,sheetLengthMm):[[0,0],[sheetLengthMm,0],[sheetLengthMm,sheetWidth],[0,sheetWidth]];
   const rings=[sheet,...world.flatMap(p=>[p.outer,...p.holes])];
   if(rings.some(ring=>ring.length<3||ring.flat().some(v=>!Number.isFinite(v))))throw Error('DXF contour is invalid.');
   const [minX,minY,maxX,maxY]=rings.flat().reduce((b,[x,y])=>[Math.min(b[0],x),Math.min(b[1],y),Math.max(b[2],x),Math.max(b[3],y)],[Infinity,Infinity,-Infinity,-Infinity]);

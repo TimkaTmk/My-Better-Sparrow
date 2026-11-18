@@ -31,13 +31,13 @@ self.onmessage = async ({ data }: MessageEvent<RuntimeStart | {type:'preload';th
     const seconds=data.type==='bridge'?data.seconds:doc!.settings.timeLimitSeconds,clearance=doc?.settings.clearanceMm??0,preset=doc?.settings.solverPreset??'standard';
     send({type:'run-input',input,seed:data.seed,seconds,clearance,preset,threads,solverBinary});
     const control=data.control?new Int32Array(data.control):undefined;
-    const perforated=doc?.parts.some(part=>part.quantity>0&&part.holes.length);
+    const requiresExactCheck=doc?.parts.some(part=>part.quantity>0&&part.holes.length)||!!doc?.settings.materialLeftEdge;
     let checkedLength=Infinity;
     wasm.run(input, seconds??undefined, data.seed, clearance, preset, (json: string) => {
       const message = JSON.parse(json) as SolverMessage;
       // Close the Skip gate synchronously, before the coordinator receives the phase change.
       if(control&&message.type==='phase'&&message.phase==='Compression')Atomics.store(control,0,-1);
-      if(doc&&perforated&&message.type==='candidate') {
+      if(doc&&requiresExactCheck&&message.type==='candidate') {
         if(message.solution.strip_width>=checkedLength) {
           send({...message,type:'live'});
           return;

@@ -1,7 +1,8 @@
 import { DEFAULT_SETTINGS, newPart, type Document, type Part, type Ring } from '../model';
-import { bounds, normalizeDocument, normalizeRing } from '../geometry/normalize';
+import { bounds, normalizeDocument, normalizeMaterialLeftEdge, normalizeRing } from '../geometry/normalize';
 
-export type ImportReview = { document: Document; warnings: string[]; replace: boolean; issues?:string[]; layers?:string[]; result?:import('../model').Result };
+export type ImportReview = { document: Document; warnings: string[]; replace: boolean; issues?:string[]; layers?:string[]; result?:import('../model').Result;
+  material?:{leftEdge:import('../model').Ring;heightMm:number;previewLengthMm:number} };
 export function record(value: unknown): Record<string,unknown> {
   if(!value || typeof value!=='object' || Array.isArray(value)) throw Error('Expected an object.');
   return value as Record<string,unknown>;
@@ -66,13 +67,17 @@ export function importSparrow(text: string,fileName: string,scale: number): Impo
       preparationPosition:[index*50,0]});
   });
   const clearanceMm = input.min_item_separation === undefined ? 0 : number(input.min_item_separation) * scale;
-  return {document:normalizeDocument({name:input.name,parts,settings:{...DEFAULT_SETTINGS,materialWidthMm:number(input.strip_height)*scale,clearanceMm}}),
+  const materialWidthMm=number(input.strip_height)*scale;
+  const materialLeftEdge=input.strip_left_boundary===undefined?undefined:normalizeMaterialLeftEdge(
+    (input.strip_left_boundary as unknown[]).map(raw=>{if(!Array.isArray(raw)||raw.length!==2)throw Error('Invalid strip_left_boundary point.');return [number(raw[0])*scale,number(raw[1])*scale];}),materialWidthMm);
+  return {document:normalizeDocument({name:input.name,parts,settings:{...DEFAULT_SETTINGS,materialWidthMm,clearanceMm,...(materialLeftEdge?{materialLeftEdge}:{})}}),
     replace:false,warnings:[...(input.solution!==undefined?['Stored native solution is ignored; warm starts are not supported.']:[]),
       `One coordinate unit = ${scale} mm. Benchmark coordinates have no intrinsic manufacturing units.`]};
 }
 export function solverInput(doc: Document): string {
   if(!doc.parts.some(part=>part.quantity>0))throw Error('Add at least one copy before nesting.');
-  return JSON.stringify({name:doc.name,strip_height:doc.settings.materialWidthMm,min_item_separation:doc.settings.clearanceMm,items:doc.parts.filter(part=>part.quantity>0).map((p,id)=>({
+  return JSON.stringify({name:doc.name,strip_height:doc.settings.materialWidthMm,min_item_separation:doc.settings.clearanceMm,
+    ...(doc.settings.materialLeftEdge?{strip_left_boundary:doc.settings.materialLeftEdge}:{}),items:doc.parts.filter(part=>part.quantity>0).map((p,id)=>({
     id,demand:p.quantity,
     orientation:{rotation:p.rotations.kind==='continuous'?{mode:'continuous'}:{mode:'discrete',angles:p.rotations.degrees}},
     shape:p.holes.length?{type:'polygon',data:{outer:p.outer,inner:p.holes}}:{type:'simple_polygon',data:p.outer},

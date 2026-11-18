@@ -3,7 +3,7 @@ import bSpline from 'dxf/lib/util/bSpline';
 import {pointSegmentDistance} from '../geometry/validate';
 import {DEFAULT_SETTINGS,SHEET_LAYER,type Point,type Ring} from '../model';
 import {apply,multiply,append,ellipse,type Matrix} from '../geometry/flatten';
-import {bounds,normalizeDocument,normalizeRing,ringCrosses} from '../geometry/normalize';
+import {bounds,normalizeDocument,normalizeMaterialLeftEdge,normalizeRing,ringCrosses} from '../geometry/normalize';
 import {contoursToParts} from './svg';
 import type {ImportReview} from './sparrow';
 
@@ -17,8 +17,8 @@ type DxfFile={entities:DxfEntity[];blocks:{name:string;x?:number;y?:number;entit
 type Group=[number,string];
 type DxfRecord={type:string;groups:Group[];children:DxfRecord[];id:string;layer:string};
 type Contour={ring:Ring;entityId:string;curved:boolean};
-type Chain={points:Ring;id:string;curved:boolean};
-export type DXFOptions={scale:number;overrideDxfUnits?:boolean;tolerance:number;enclosed:'holes'|'parts';layers?:string[]};
+type Chain={points:Ring;id:string;curved:boolean;sourceType:string};
+export type DXFOptions={scale:number;overrideDxfUnits?:boolean;tolerance:number;enclosed:'holes'|'parts';layers?:string[];mode?:'parts'|'material'};
 const value=(r:DxfRecord,code:number)=>r.groups.find(g=>g[0]===code)?.[1];
 function finite(text:string|undefined,fallback?:number):number {
   if(text===undefined&&fallback!==undefined)return fallback;
@@ -247,11 +247,29 @@ export function importDXF(text:string,fileName:string,options:DXFOptions):Import
       ring=ring.map(p=>apply(matrix,p));
       if(ring.some(p=>!p.every(v=>Number.isFinite(v)&&Math.abs(v)<=100_000)))throw Error('Coordinates exceed the 100,000 mm limit.');
       totalVertices+=ring.length;if(totalVertices>100_000)throw Error('DXF exceeds 100,000 vertices.');
-      if(closed)contours.push({ring,entityId:r.id,curved});else chains.push({points:ring,id:r.id,curved});
+      if(closed)contours.push({ring,entityId:r.id,curved});else chains.push({points:ring,id:r.id,curved,sourceType:entity.type});
     }catch(error){if(expanded>10_000||totalVertices>100_000)throw error;issues.push(`${r.id} on ${layer}: ${error instanceof Error?error.message:String(error)}`);}
   };
   for(const entity of parsed.entities)visit(entity,[scale,0,0,scale,0,0],'0',[]);
   layers.sort();
+  if(options.mode==='material') {
+    const profiles=chains.filter(chain=>chain.sourceType==='LWPOLYLINE'||chain.sourceType==='POLYLINE');
+    if(profiles.length!==1||chains.length!==1)throw Error('Choose a DXF layer containing exactly one open 2D polyline for the material left edge.');
+    const sourceProfile=profiles[0].points;
+    if(sourceProfile.length<2)throw Error('The material polyline needs at least two distinct endpoints.');
+    const first=sourceProfile[0],last=sourceProfile.at(-1)!;
+    if(Math.abs(first[1]-last[1])<=1e-6)throw Error('The two material-profile endpoints must be at different heights.');
+    const low=Math.min(first[1],last[1]),high=Math.max(first[1],last[1]),height=high-low;
+    if(sourceProfile.some(([,y])=>y<low-1e-6||y>high+1e-6))throw Error('The polyline must stay between its lower and upper endpoints.');
+    const ordered=first[1]<last[1]?sourceProfile:[...sourceProfile].reverse();
+    const leftEdge=normalizeMaterialLeftEdge(ordered,height);
+    const rightmost=Math.max(...leftEdge.map(point=>point[0])),previewLength=rightmost+Math.max(height,1);
+    const materialDocument={name:fileName.replace(/\.dxf$/i,''),parts:[],settings:{...DEFAULT_SETTINGS,materialWidthMm:height,materialLeftEdge:leftEdge}};
+    const materialWarnings=[...warnings];
+    for(const [type,count] of unsupported)materialWarnings.push(`Excluded ${count} unsupported ${type} entities.`);
+    return {document:materialDocument,warnings:materialWarnings,issues, layers,replace:false,
+      material:{leftEdge,heightMm:height,previewLengthMm:previewLength}};
+  }
   const joined=join(chains,issues);contours.push(...joined.contours);
   if(joined.gaps)warnings.push(`Joined ${joined.gaps} gaps within 0.01 mm; largest endpoint adjustment ${joined.adjustment} mm. Confirm this preview before importing.`);
   const valid:Contour[]=[];

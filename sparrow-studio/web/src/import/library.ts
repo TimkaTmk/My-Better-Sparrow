@@ -31,8 +31,9 @@ function normalizeSourceDocument(document:Document,factor:number,resetQuantity=f
     return {...normalized,preparationPosition:part.preparationPosition.map(value=>value*factor) as [number,number]};
   });
   const placements=document.placements?.map(placement=>({...placement,xMm:placement.xMm*factor,yMm:placement.yMm*factor}));
+  const materialLeftEdge=document.settings.materialLeftEdge?.map(([x,y])=>[x*factor,y*factor] as [number,number]);
   return normalizeDocument({...document,parts,
-    settings:{...document.settings,materialWidthMm:document.settings.materialWidthMm*factor,clearanceMm:document.settings.clearanceMm*factor},
+    settings:{...document.settings,materialWidthMm:document.settings.materialWidthMm*factor,clearanceMm:document.settings.clearanceMm*factor,...(materialLeftEdge?{materialLeftEdge}:{})},
     placements,
   });
 }

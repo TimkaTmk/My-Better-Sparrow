@@ -1,4 +1,5 @@
 use crate::geometry::DTransformation;
+use crate::geometry::primitives::Point;
 use crate::geometry::shape_modification::ShapeModifyConfig;
 use crate::io::import::{Importer, ext_to_int_transformation};
 use crate::probs::spp::entities::{SPInstance, SPPlacement, SPProblem, SPSolution, Strip};
@@ -49,7 +50,20 @@ pub fn import_instance(importer: &Importer, ext_instance: &ExtSPInstance) -> Res
         "separation leaves no usable strip height"
     );
     // Initialize the usable area for 100% density.
-    let width = separation + total_item_area / usable_height;
+    let left_boundary = ext_instance.strip_left_boundary.as_ref().map(|points| {
+        points
+            .iter()
+            .map(|[x, y]| Point(*x, *y))
+            .collect::<Vec<_>>()
+    });
+    let minimum_profile_width = left_boundary.as_ref().map_or(0.0, |points| {
+        let rightmost = points.iter().map(|p| p.0).fold(0.0_f32, f32::max);
+        rightmost
+            + fixed_height.max(rightmost).max(1.0)
+                * crate::geometry::primitives::SPolygon::MIN_EDGE_LENGTH_RATIO
+                * 2.0
+    });
+    let width = (separation + total_item_area / usable_height).max(minimum_profile_width);
 
     let base_strip = Strip::new(
         fixed_height,
@@ -60,6 +74,7 @@ pub fn import_instance(importer: &Importer, ext_instance: &ExtSPInstance) -> Res
             narrow_concavity_cutoff: None,
         },
         width,
+        left_boundary,
     )?;
 
     Ok(SPInstance::new(items, base_strip))
